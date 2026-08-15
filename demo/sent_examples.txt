@@ -1,0 +1,23 @@
+Paste 3-5 of your own past sent emails below, separated by "---" on its own
+line. This gets fed to the drafting model as style reference so replies sound
+like you instead of a generic assistant. Delete this instruction block first.
+
+---
+
+Hey Sam,
+
+Thanks for sending this over -- looks good on my end. Let's plan to kick off
+Monday, I'll send a calendar invite shortly.
+
+Best,
+Alex
+
+---
+
+Hi there,
+
+Appreciate the follow up. I'm still reviewing the proposal and should have
+feedback by Thursday. Will circle back then.
+
+Thanks,
+Alex
