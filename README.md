@@ -92,7 +92,7 @@ line, or separated by `---`) so drafts sound like you instead of generic.
 Fill in `contacts.json` with any recipients whose Discord/Telegram handle you
 want the agent able to fall back to.
 
-## Demo notes (be upfront about these in the video)
+## Demo notes 
 
 - **Outward reach**: waiting hours for a real non-reply kills demo pacing.
   Set `UNANSWERED_THRESHOLD_SECONDS` low (e.g. `20`) for the recording and
@@ -104,7 +104,7 @@ want the agent able to fall back to.
 - Keep the demo to email + Telegram for the core loop (both free, instant,
   no sign-in) and only bring in Discord for the outward-reach beat.
 
-## Hackathon checklist
+## checklist
 
 - [x] Uses `caspian-sdk`
 - [x] Runs on 2+ channels (Email, Telegram, optionally Discord) behind one
