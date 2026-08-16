@@ -1,124 +1,189 @@
-# Ghostwriter
+# Ghostwriter — Your Inbox's Silent Partner
 
-An AI agent that triages your unanswered email, drafts replies in your voice,
-lets you approve them from Telegram, chases silent recipients on a second
-channel, and gradually earns the right to send low-stakes replies on its own.
+An AI agent that triages your email, drafts replies in your voice, gets your approval on Telegram, and follows up with silent recipients on a channel they'll actually see.
 
-Built for the Caspian AI Agent Hackathon. Uses `caspian-sdk` with a single
-`on_message` handler running across **Email + Telegram** (core), with optional
-**Discord** used for the outward-reach feature.
+Built for the **Caspian AI Agent Hackathon**, using [`caspian-sdk`](https://github.com/TryCaspian/caspian-sdk) to give one agent identity across **Email + Telegram**, behind a single message handler.
 
-## Why this exists
+---
 
-Messages go unanswered not because people don't care, but because replying
-takes context-switching and effort — and often the reply is *also* waiting on
-the other person, sitting unread in an inbox they don't check.
+## Table of contents
 
-## What it does
+- [The problem](#the-problem)
+- [What Ghostwriter does](#what-ghostwriter-does)
+- [Why this is a different use of Caspian](#why-this-is-a-different-use-of-caspian)
+- [How this satisfies the hackathon requirements](#how-this-satisfies-the-hackathon-requirements)
+- [Architecture](#architecture)
+- [Step-by-step: what actually happens](#step-by-step-what-actually-happens)
+- [Project structure](#project-structure)
+- [Setup](#setup)
+- [Running it](#running-it)
+- [Optional: deploying so it runs 24/7](#optional-deploying-so-it-runs-247)
+- [Honest notes on real-world behavior](#honest-notes-on-real-world-behavior)
+- [Demo notes](#demo-notes)
+- [Tech stack](#tech-stack)
+- [What's next](#whats-next-not-built-yet)
+- [License](#license)
 
-1. **Watches your email** for messages that need a reply.
-2. **Triages** each one with an LLM: ignore / needs a reply / urgent. This is
-   a judgment call, not a keyword filter.
-3. **Drafts a reply in your voice** (few-shot from example sent messages you
-   provide).
-4. **Pings you on Telegram** with the draft and three actions: `Send`,
-   `Edit`, `Snooze`. Telegram is the control room; email is the surface being
-   managed — not a duplicate alert.
-5. **Sends from email** the moment you approve, in the same thread.
-6. **Outward reach**: if the recipient doesn't reply within a configurable
-   window, and you've told the agent their Discord/Telegram handle, it
-   follows up *on that channel* instead of just waiting on email. This uses
-   Caspian's core promise — one identity, any human, any channel — pointed at
-   the other party, not just at you.
-7. **Trust calibration**: the agent tracks your Send / Edit / Snooze decisions
-   per sender. Once a sender has enough approved-as-is replies, low-stakes
-   follow-ups to that sender get sent automatically, and the agent only pings
-   you again when it's uncertain or the stakes go up.
+---
+
+## The problem
+
+Messages go unanswered — not because people don't care, but because replying takes context-switching and effort. And often the reply is *also* waiting on the other person, sitting unread in an inbox they don't check.
+
+## What Ghostwriter does
+
+1. **Watches an inbox** for incoming email.
+2. **Uses AI to triage** each message — ignore it, it needs a reply, or it's urgent — with a visible one-line reason on every card, not just a verdict.
+3. **Drafts a reply in your voice** — using examples of your real writing as style reference.
+4. **Sends you a card on Telegram** with the draft and three actions: **Send / Edit / Snooze**.
+5. **Sends the approved reply** the moment you decide, correctly threaded in the original email conversation.
+6. **Follows up on a different channel if the recipient goes quiet.** If you've approved a reply and the recipient doesn't respond, and they've shared a Telegram handle (or the agent learned one from something they wrote), Ghostwriter follows up with *them* on Telegram — instead of waiting on an inbox that isn't working.
+7. **Learns contacts dynamically.** Nothing is hardcoded. If a sender mentions a `@handle` in their email, the agent saves it automatically. If it doesn't have one on file, it asks — once, in the very first reply, while it knows the person is actively checking that inbox.
+8. **Earns autonomy over time.** The agent tracks Send/Edit/Snooze decisions per sender. Once a sender has a track record of approved-as-is replies, low-stakes follow-ups to them get sent automatically — no approval needed — and the agent only steps back in if something's urgent or unusual.
+
+## Why this is a different use of Caspian
+
+Most multi-channel agents use a second channel to alert the *same* person twice — e.g. "notify me on Slack **and** Telegram." Ghostwriter uses the two channels for two different roles instead:
+
+- **Email is the surface being managed** — where the actual conversation happens.
+- **Telegram is the control room** — where the owner approves, edits, or snoozes.
+- **Outward reach turns the identity outward** — the agent uses the *same* Caspian identity to reach the *other person*, not just the owner, directly reusing Caspian's core pitch ("one identity, any channel, any human") in a literal way most implementations won't.
+
+---
+
+## How this satisfies the hackathon requirements
+
+| Requirement | How Ghostwriter satisfies it |
+|---|---|
+| **Use the caspian-sdk** | Every core action goes through `caspian_sdk.CommClient`: `connect_email()`, `connect_telegram()`, `send_message()`, `reply()`, `initiate()`, `on_message`, `on_interaction`. |
+| **Run on at least two supported communication channels** | Email and Telegram, both live-tested end to end (Discord is also wired in, optional). |
+| **Using a single handler** | One `@client.on_message` function branches by `message.channel` — not separate handlers duplicated per channel. |
+| **Solves a real problem** | Universal, everyday pain: replying to email, and following up when people go quiet. |
+| **Creativity/originality** | Two channels playing different roles, plus reaching the recipient — not just the owner — with the same agent identity. |
+| **Functional implementation** | Every feature has been tested against the real Caspian API, real email delivery, and a real second Telegram device — not mocked. |
+
+---
 
 ## Architecture
 
 ```
-Email inbound ──▶ on_message ──▶ triage (LLM) ──▶ draft (LLM) ──▶ store pending
-                                                                    │
-                                                                    ▼
-                                                     push Telegram card to owner
-                                                     (Send / Edit / Snooze)
-Telegram inbound (owner) ──▶ on_message ──▶ resolve pending draft ──▶ send via email
+Email inbound ──▶ on_message ──▶ AI triage ──▶ AI draft ──▶ store pending draft
+                                                                  │
+                                                                  ▼
+                                                   push Telegram card to owner
+                                                   (Send / Edit / Snooze)
+Telegram inbound (owner) ──▶ on_message / on_interaction ──▶ resolve draft ──▶ send via email
 
-Background watcher (runs alongside client.listen):
-  - unanswered too long + sender trusted  ──▶ auto-send, log it, no ping
-  - unanswered too long + not trusted     ──▶ ping owner on Telegram
-  - recipient never replied + has a 2nd channel handle ──▶ outward nudge via client.initiate
+Background watcher (runs alongside client.listen()):
+  • unanswered too long + sender trusted     → auto-send, notify owner, no approval needed
+  • recipient hasn't replied + has a channel → outward nudge via Telegram
 ```
 
-One `on_message` handler, branching on `message.channel` and `message.sender`
-— never duplicated per channel, per the hackathon rules.
+One `@client.on_message` handler, branching on `message.channel` and sender identity — never duplicated per channel.
 
-## Project layout
+---
+
+## Step-by-step: what actually happens
+
+1. An email arrives at the agent's address.
+2. The AI reads it and classifies it: `ignore`, `reply`, or `urgent` — plus a one-line reason, shown on every card.
+3. If the email mentions a Telegram handle, the agent saves it automatically for future follow-ups (dynamic contact learning — nothing hardcoded).
+4. If the sender is already trusted (a track record of approved replies) and it's not urgent, the agent sends the reply immediately and just tells the owner what it did.
+5. Otherwise, the AI drafts a reply — in the owner's voice — and if there's no channel on file for this sender yet, adds a short line asking for one.
+6. A card is pushed to the owner's Telegram: subject, draft, urgency, the AI's reasoning, and three buttons.
+7. The owner taps **Send** (sends as drafted), **Edit** (replaces with their own text), or **Snooze** (does nothing, for now).
+8. In the background, a watcher checks periodically: if a reply was sent and the recipient goes quiet past a threshold, and a fallback channel is on file, the agent follows up with them there — and tells the owner it did.
+
+---
+
+## Project structure
 
 ```
 ghostwriter/
-  agent.py        # CommClient wiring + the on_message handler + background watcher
-  ai.py            # LLM calls: triage, draft, escalation/tone detection
-  storage.py       # tiny JSON-file state store (pending drafts, trust, contacts, threads)
-  contacts.py      # email -> other-channel handle lookup
-  config.py        # env var loading
+  agent.py        # CommClient wiring, on_message/on_interaction handlers, background watcher
+  ai.py            # LLM calls: triage, drafting, escalation/tone detection
+  storage.py       # JSON-backed state: pending drafts, trust scores, threads, learned contacts
+  contacts.py      # dynamic contact learning + lookup for outward reach
+  config.py        # environment configuration
 scripts/
   run.py           # entrypoint
 demo/
-  seed_trust.py    # pre-seeds approval history so the "autonomy" moment is visible live
-  sent_examples.txt  # paste a few of your own past sent emails here for style few-shot
-contacts.json       # you fill this in: {"someone@example.com": {"telegram": "@handle"}}
+  seed_trust.py       # pre-seeds approval history to demo trust calibration quickly
+  sent_examples.txt   # your own past sent emails, used as style reference for drafts
+contacts.json.example  # template — real contacts.json is gitignored, never committed
+.env.example            # template — real .env is gitignored, never committed
 ```
+
+---
 
 ## Setup
 
 ```bash
 pip install -r requirements.txt
 cp .env.example .env
-# fill in .env: CASPIAN_API_KEY, ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN (from @BotFather)
+cp contacts.json.example contacts.json
+```
+
+Fill in `.env`:
+- `CASPIAN_API_KEY` — from Caspian
+- `TELEGRAM_BOT_TOKEN` — create a bot via [@BotFather](https://t.me/BotFather) on Telegram
+- `GROQ_API_KEY` — free, no credit card, from [console.groq.com/keys](https://console.groq.com/keys) (default AI provider)
+  - Or set `AI_PROVIDER=anthropic` and provide `ANTHROPIC_API_KEY` instead, if preferred
+
+Add a few of your own past sent emails to `demo/sent_examples.txt` so drafts sound like you.
+
+## Running it
+
+```bash
 python scripts/run.py
 ```
 
-On first run the agent connects email + Telegram, prints the agent's email
-address, and starts listening. Message the Telegram bot once from your own
-account so it learns your chat id (it says so on first contact) — that's how
-it knows where to send proactive pings, since those aren't replies to an
-inbound message.
+Message your Telegram bot once (e.g. "hi") to register yourself as the owner — this is how the agent knows where to send approval cards, since those are proactive messages, not replies to something you sent it. This is a one-time step; it's remembered across restarts.
 
-Add a few of your own past sent emails to `demo/sent_examples.txt` (one per
-line, or separated by `---`) so drafts sound like you instead of generic.
+## Optional: deploying so it runs 24/7
 
-Fill in `contacts.json` with any recipients whose Discord/Telegram handle you
-want the agent able to fall back to.
+Ghostwriter runs as a long-lived background process (`client.listen()`) — locally, that's a terminal window; in production, this runs the exact same way on a small always-on host, no code changes needed:
 
-## Demo notes 
+1. Push this repo to GitHub (already done if you're reading this there).
+2. Create a project on a host that supports background workers (e.g. Railway, Render).
+3. Set the start command to `python scripts/run.py`.
+4. Add the same variables from your `.env` as environment variables in the host's dashboard — never commit real secrets.
+5. Deploy — check the logs for the same startup lines you see locally.
 
-- **Outward reach**: waiting hours for a real non-reply kills demo pacing.
-  Set `UNANSWERED_THRESHOLD_SECONDS` low (e.g. `20`) for the recording and
-  say so on camera — the mechanism is real, only the wait is compressed.
-- **Trust calibration**: run `python demo/seed_trust.py <sender-email> 5`
-  before recording to pre-seed approval history, so you can show the
-  before/after (agent asks permission → agent sends on its own) in one take
-  instead of doing it live five times.
-- Keep the demo to email + Telegram for the core loop (both free, instant,
-  no sign-in) and only bring in Discord for the outward-reach beat.
+---
 
-## checklist
+## Honest notes on real-world behavior
 
-- [x] Uses `caspian-sdk`
-- [x] Runs on 2+ channels (Email, Telegram, optionally Discord) behind one
-      `on_message` handler — no per-channel handler duplication
-- [x] Solves a real, everyday problem
-- [x] AI does judgment work (triage, tone/escalation reasoning, confidence-
-      gated autonomy), not just text generation
+- **The agent has its own email address** (provisioned by Caspian), not your personal inbox. To route your real mail to it, forward specific messages, or use it as a dedicated address for a workflow. This is standard for how agent identities work — not a shortcut taken for the demo.
+- **Outward reach requires the contact to have messaged the bot at least once first** — a real Telegram platform rule (bots can't cold-message someone who's never started a chat with them). The agent works around Caspian's `initiate` capability restriction by reusing an existing conversation once one exists.
+- **Not every sender will have a fallback channel on file**, and that's by design — outward reach activates only once a contact has shared one (mentioned directly, or in response to being asked). For everyone else, the agent still triages, drafts, and manages approval normally; it just can't follow up elsewhere for that specific person.
+- **This is a human-in-the-loop agent by design** — most actions wait for owner approval, except once a sender has earned trust. This mirrors how serious production agent deployments are usually built: autonomy is earned, not assumed.
 
-## Notes on the SDK calls
+---
 
-This was built against the current `caspian-sdk` docs/SKILL guide. A couple
-of calls (`client.initiate(...)` for proactive Telegram/Discord messages, the
-exact shape of button-callback delivery) are used based on the documented
-patterns — double-check method names/signatures against
-`https://www.trycaspianai.com/docs/` and the SDK reference if they've moved,
-since the SDK is actively developed. Everything is isolated in `agent.py` and
-`ai.py` so it's easy to patch.
+## Demo notes
+
+- `UNANSWERED_THRESHOLD_SECONDS` is set low during testing/recording to avoid waiting hours for a real demo — this is stated explicitly in the demo video, not hidden.
+- `demo/seed_trust.py <email> <count>` pre-seeds approval history so the "the agent now acts on its own" moment is visible in one take.
+
+---
+
+## Tech stack
+
+- [`caspian-sdk`](https://github.com/TryCaspian/caspian-sdk) — multi-channel agent identity (email, Telegram, Discord)
+- [Groq](https://groq.com) — free LLM inference (default), or Anthropic Claude as an alternative
+- Python, JSON-backed local state (swap for a real DB for production use)
+
+---
+
+## What's next (not built yet)
+
+- WhatsApp/Slack as additional fallback channels (architecture already supports adding them)
+- A real database instead of JSON file storage
+- Auto-refreshing the in-memory contact list when new contacts are learned mid-run, instead of only at startup
+
+---
+
+## License
+
+MIT — free to use, modify, and build on.
